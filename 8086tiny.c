@@ -7,16 +7,8 @@
 
 #include <time.h>
 #include <sys/timeb.h>
-#include <memory.h>
-
-#ifndef _WIN32
-#include <unistd.h>
-#include <fcntl.h>
-#endif
-
-#ifndef NO_GRAPHICS
-#include "SDL.h"
-#endif
+#include <string.h>
+#include <stdlib.h>
 
 // Emulator system constants
 #define IO_PORT_COUNT 0x10000
@@ -140,20 +132,6 @@
 // Reinterpretation cast
 #define CAST(a) *(a*)&
 
-// Keyboard driver for console. This may need changing for UNIX/non-UNIX platforms
-#ifdef _WIN32
-#define KEYBOARD_DRIVER kbhit() && (mem[0x4A6] = getch(), pc_interrupt(7))
-#else
-#define KEYBOARD_DRIVER read(0, mem + 0x4A6, 1) && (int8_asap = (mem[0x4A6] == 0x1B), pc_interrupt(7))
-#endif
-
-// Keyboard driver for SDL
-#ifdef NO_GRAPHICS
-#define SDL_KEYBOARD_DRIVER KEYBOARD_DRIVER
-#else
-#define SDL_KEYBOARD_DRIVER sdl_screen ? SDL_PollEvent(&sdl_event) && (sdl_event.type == SDL_KEYDOWN || sdl_event.type == SDL_KEYUP) && (scratch_uint = sdl_event.key.keysym.unicode, scratch2_uint = sdl_event.key.keysym.mod, CAST(short)mem[0x4A6] = 0x400 + 0x800*!!(scratch2_uint & KMOD_ALT) + 0x1000*!!(scratch2_uint & KMOD_SHIFT) + 0x2000*!!(scratch2_uint & KMOD_CTRL) + 0x4000*(sdl_event.type == SDL_KEYUP) + ((!scratch_uint || scratch_uint > 0x7F) ? sdl_event.key.keysym.sym : scratch_uint), pc_interrupt(7)) : (KEYBOARD_DRIVER)
-#endif
-
 // Global variable definitions
 unsigned char mem[RAM_SIZE], io_ports[IO_PORT_COUNT], *opcode_stream, *regs8, i_rm, i_w, i_reg, i_mod, i_mod_size, i_d, i_reg4bit, raw_opcode_id, xlat_opcode_id, extra, rep_mode, seg_override_en, rep_override_en, trap_flag, int8_asap, scratch_uchar, io_hi_lo, *vid_mem_base, spkr_en, bios_table_lookup[20][256];
 unsigned short *regs16, reg_ip, seg_override, file_index, wave_counter;
@@ -162,12 +140,30 @@ int op_result, disk[3], scratch_int;
 time_t clock_buf;
 struct timeb ms_clock;
 
-#ifndef NO_GRAPHICS
-SDL_AudioSpec sdl_audio = {44100, AUDIO_U8, 1, 0, 128};
-SDL_Surface *sdl_screen;
-SDL_Event sdl_event;
 unsigned short vid_addr_lookup[VIDEO_RAM_SIZE], cga_colors[4] = {0 /* Black */, 0x1F1F /* Cyan */, 0xE3E3 /* Magenta */, 0xFFFF /* White */};
-#endif
+
+//DIRK
+int inGraphics = 0;
+
+int Emu_enterTextMode();
+int Emu_drawBuffer(const unsigned int *pixels, const unsigned int *palette);
+int Emu_enterGraphicsMode(int width, int height, int bpp);
+int Emu_init();
+int Emu_quit();
+int Emu_putint(unsigned long i);
+int Emu_open(const char *filename, int flags);
+int Emu_seek(int handle, int offset, int whence);
+int Emu_read(int handle, void* buffer, int amount);
+int Emu_write(int handle, void* buffer, int amount);
+int Emu_keyEvent(int *keyDown, int *keyValue, int *keyAlt, int *keyShift, int *keyCtrl);
+unsigned long Emu_getMilliseconds();
+int Emu_printChar(unsigned char ch);
+
+#define KEYBOARD_DRIVER Emu_read(0, mem + 0x4A6, 1) && (int8_asap = (mem[0x4A6] == 0x1B), pc_interrupt(7))
+
+#define SDL_KEYBOARD_DRIVER inGraphics ? Emu_keyEvent(&keyDown, &keyValue, &keyAlt, &keyShift, &keyCtrl) && (scratch_uint = keyValue, CAST(short)mem[0x4A6] = 0x400 + 0x800*!!(keyAlt) + 0x1000*!!(keyShift) + 0x2000*!!(keyCtrl) + 0x4000*(!keyDown) + ((!scratch_uint || scratch_uint > 0x7F) ? scratch_uint : scratch_uint), pc_interrupt(7)) : KEYBOARD_DRIVER
+
+//DIRK/
 
 // Helper functions
 
@@ -245,28 +241,12 @@ int AAA_AAS(char which_operation)
 	return (regs16[REG_AX] += 262 * which_operation*set_AF(set_CF(((regs8[REG_AL] & 0x0F) > 9) || regs8[FLAG_AF])), regs8[REG_AL] &= 0x0F);
 }
 
-#ifndef NO_GRAPHICS
-void audio_callback(void *data, unsigned char *stream, int len)
-{
-	for (int i = 0; i < len; i++)
-		stream[i] = (spkr_en == 3) && CAST(unsigned short)mem[0x4AA] ? -((54 * wave_counter++ / CAST(unsigned short)mem[0x4AA]) & 1) : sdl_audio.silence;
-
-	spkr_en = io_ports[0x61] & 3;
-}
-#endif
-
 // Emulator entry point
-int main(int argc, char **argv)
+void LOOP(const char *bios, const char *fdd, const char *hdd, int bootFromFloppy)
 {
-#ifndef NO_GRAPHICS
-	// Initialise SDL
-	SDL_Init(SDL_INIT_AUDIO);
-	sdl_audio.callback = audio_callback;
-#ifdef _WIN32
-	sdl_audio.samples = 512;
-#endif
-	SDL_OpenAudio(&sdl_audio, 0);
-#endif
+	unsigned int *pixels = (unsigned int*)malloc(1024 * 768 * sizeof(int));
+
+	Emu_init();
 
 	// regs16 and reg8 point to F000:0, the start of memory-mapped registers. CS is initialised to F000
 	regs16 = (unsigned short *)(regs8 = mem + REGS_BASE);
@@ -277,17 +257,19 @@ int main(int argc, char **argv)
 
 	// Set DL equal to the boot device: 0 for the FD, or 0x80 for the HD. Normally, boot from the FD.
 	// But, if the HD image file is prefixed with @, then boot from the HD
-	regs8[REG_DL] = ((argc > 3) && (*argv[3] == '@')) ? argv[3]++, 0x80 : 0;
+	//regs8[REG_DL] = ((argc > 3) && (*argv[3] == '@')) ? argv[3]++, 0x80 : 0;
+	regs8[REG_DL] = (bootFromFloppy && fdd) ? 0 : 0x80;
 
-	// Open BIOS (file id disk[2]), floppy disk image (disk[1]), and hard disk image (disk[0]) if specified
-	for (file_index = 3; file_index;)
-		disk[--file_index] = *++argv ? open(*argv, 32898) : 0;
+	disk[0] = hdd ? Emu_open(hdd, 32898) : 0;
+	disk[1] = fdd ? Emu_open(fdd, 32898) : 0;
+	disk[2] = Emu_open(bios, 32898);
+	disk[3] = 0;
 
 	// Set CX:AX equal to the hard disk image size, if present
-	CAST(unsigned)regs16[REG_AX] = *disk ? lseek(*disk, 0, 2) >> 9 : 0;
+	CAST(unsigned)regs16[REG_AX] = *disk ? Emu_seek(*disk, 0, 2) >> 9 : 0;
 
 	// Load BIOS image into F000:0100, and set IP to 0100
-	read(disk[2], regs8 + (reg_ip = 0x100), 0xFF00);
+	Emu_read(disk[2], regs8 + (reg_ip = 0x100), 0xFF00);
 
 	// Load instruction decoding helper table
 	for (int i = 0; i < 20; i++)
@@ -585,7 +567,7 @@ int main(int argc, char **argv)
 				scratch_uint == 0x61 && (io_hi_lo = 0, spkr_en |= regs8[REG_AL] & 3); // Speaker control
 				(scratch_uint == 0x40 || scratch_uint == 0x42) && (io_ports[0x43] & 6) && (mem[0x469 + scratch_uint - (io_hi_lo ^= 1)] = regs8[REG_AL]); // PIT rate programming
 #ifndef NO_GRAPHICS
-				scratch_uint == 0x43 && (io_hi_lo = 0, regs8[REG_AL] >> 6 == 2) && (SDL_PauseAudio((regs8[REG_AL] & 0xF7) != 0xB6), 0); // Speaker enable
+//				scratch_uint == 0x43 && (io_hi_lo = 0, regs8[REG_AL] >> 6 == 2) && (Emu_pauseAudio((regs8[REG_AL] & 0xF7) != 0xB6), 0); // Speaker enable
 #endif
 				scratch_uint == 0x3D5 && (io_ports[0x3D4] >> 1 == 6) && (mem[0x4AD + !(io_ports[0x3D4] & 1)] = regs8[REG_AL]); // CRT video RAM start offset
 				scratch_uint == 0x3D5 && (io_ports[0x3D4] >> 1 == 7) && (scratch2_uint = ((mem[0x49E]*80 + mem[0x49D] + CAST(short)mem[0x4AD]) & (io_ports[0x3D4] & 1 ? 0xFF00 : 0xFF)) + (regs8[REG_AL] << (io_ports[0x3D4] & 1 ? 0 : 8)) - CAST(short)mem[0x4AD], mem[0x49D] = scratch2_uint % 80, mem[0x49E] = scratch2_uint / 80); // CRT cursor position
@@ -665,16 +647,15 @@ int main(int argc, char **argv)
 				switch ((char)i_data0)
 				{
 					OPCODE_CHAIN 0: // PUTCHAR_AL
-						write(1, regs8, 1)
+						Emu_printChar(regs8[0])
 					OPCODE 1: // GET_RTC
 						time(&clock_buf);
-						ftime(&ms_clock);
 						memcpy(mem + SEGREG(REG_ES, REG_BX,), localtime(&clock_buf), sizeof(struct tm));
-						CAST(short)mem[SEGREG(REG_ES, REG_BX, 36+)] = ms_clock.millitm;
+						CAST(short)mem[SEGREG(REG_ES, REG_BX, 36+)] = Emu_getMilliseconds();
 					OPCODE 2: // DISK_READ
 					OPCODE_CHAIN 3: // DISK_WRITE
-						regs8[REG_AL] = ~lseek(disk[regs8[REG_DL]], CAST(unsigned)regs16[REG_BP] << 9, 0)
-							? ((char)i_data0 == 3 ? (int(*)())write : (int(*)())read)(disk[regs8[REG_DL]], mem + SEGREG(REG_ES, REG_BX,), regs16[REG_AX])
+						regs8[REG_AL] = ~Emu_seek(disk[regs8[REG_DL]], CAST(unsigned)regs16[REG_BP] << 9, 0)
+							? ((char)i_data0 == 3 ? (int(*)())Emu_write : (int(*)())Emu_read)(disk[regs8[REG_DL]], mem + SEGREG(REG_ES, REG_BX,), regs16[REG_AX])
 							: 0;
 				}
 		}
@@ -709,7 +690,7 @@ int main(int argc, char **argv)
 			if (io_ports[0x3B8] & 2)
 			{
 				// If we don't already have an SDL window open, set it up and compute color and video memory translation tables
-				if (!sdl_screen)
+				if (!inGraphics)
 				{
 					for (int i = 0; i < 16; i++)
 						pixel_colors[i] = mem[0x4AC] ? // CGA?
@@ -719,25 +700,22 @@ int main(int argc, char **argv)
 					for (int i = 0; i < GRAPHICS_X * GRAPHICS_Y / 4; i++)
 						vid_addr_lookup[i] = i / GRAPHICS_X * (GRAPHICS_X / 8) + (i / 2) % (GRAPHICS_X / 8) + 0x2000*(mem[0x4AC] ? (2 * i / GRAPHICS_X) % 2 : (4 * i / GRAPHICS_X) % 4);
 
-					SDL_Init(SDL_INIT_VIDEO);
-					sdl_screen = SDL_SetVideoMode(GRAPHICS_X, GRAPHICS_Y, 8, 0);
-					SDL_EnableUNICODE(1);
-					SDL_EnableKeyRepeat(500, 30);
+					Emu_enterGraphicsMode(GRAPHICS_X, GRAPHICS_Y, 8);
 				}
 
 				// Refresh SDL display from emulated graphics card video RAM
 				vid_mem_base = mem + 0xB0000 + 0x8000*(mem[0x4AC] ? 1 : io_ports[0x3B8] >> 7); // B800:0 for CGA/Hercules bank 2, B000:0 for Hercules bank 1
 				for (int i = 0; i < GRAPHICS_X * GRAPHICS_Y / 4; i++)
-					((unsigned *)sdl_screen->pixels)[i] = pixel_colors[15 & (vid_mem_base[vid_addr_lookup[i]] >> 4*!(i & 1))];
+					((unsigned *)pixels)[i] = pixel_colors[15 & (vid_mem_base[vid_addr_lookup[i]] >> 4*!(i & 1))];
 
-				SDL_Flip(sdl_screen);
+				Emu_drawBuffer(pixels, pixel_colors);
+				inGraphics = 1;
 			}
-			else if (sdl_screen) // Application has gone back to text mode, so close the SDL window
+			else if (inGraphics) // Application has gone back to text mode, so close the SDL window
 			{
-				SDL_QuitSubSystem(SDL_INIT_VIDEO);
-				sdl_screen = 0;
+				Emu_enterTextMode();
+				inGraphics = 0;
 			}
-			SDL_PumpEvents();
 		}
 #endif
 
@@ -749,12 +727,16 @@ int main(int argc, char **argv)
 
 		// If a timer tick is pending, interrupts are enabled, and no overrides/REP are active,
 		// then process the tick and check for new keystrokes
-		if (int8_asap && !seg_override_en && !rep_override_en && regs8[FLAG_IF] && !regs8[FLAG_TF])
+		if (int8_asap && !seg_override_en && !rep_override_en && regs8[FLAG_IF] && !regs8[FLAG_TF]){
+			int keyDown;
+			int keyValue;
+			int keyAlt;
+			int keyCtrl;
+			int keyShift;
+			int keyMod;
 			pc_interrupt(0xA), int8_asap = 0, SDL_KEYBOARD_DRIVER;
+		}
 	}
 
-#ifndef NO_GRAPHICS
-	SDL_Quit();
-#endif
-	return 0;
+	Emu_quit();
 }

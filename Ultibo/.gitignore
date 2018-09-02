@@ -1,0 +1,9 @@
+/backup/
+/lib/
+/kernel7.img
+/updater.o
+*.o
+*.img
+*.elf
+*.ppu
+*.bin

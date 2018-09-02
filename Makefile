@@ -7,22 +7,13 @@
 # 8086tiny_slowcpu improves graphics performance on slow platforms (e.g. Raspberry Pi)
 # no_graphics compiles without SDL graphics/sound
 
-OPTS_ALL=-O3 -fsigned-char -std=c99
-OPTS_SDL=`sdl-config --cflags --libs`
-OPTS_NOGFX=-DNO_GRAPHICS
-OPTS_SLOWCPU=-DGRAPHICS_UPDATE_DELAY=25000
+CC=arm-none-eabi-gcc
+AR=arm-none-eabi-ar
+OPTS_ALL=-fno-exceptions -Wno-attributes -mabi=aapcs -marm -march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard -D__DYNAMIC_REENT__ -fsigned-char -std=c99 -c
 
 8086tiny: 8086tiny.c
-	${CC} 8086tiny.c ${OPTS_SDL} ${OPTS_ALL} -o 8086tiny
-	strip 8086tiny
-
-8086tiny_slowcpu: 8086tiny.c
-	${CC} 8086tiny.c ${OPTS_SDL} ${OPTS_ALL} ${OPTS_SLOWCPU} -o 8086tiny
-	strip 8086tiny
-
-no_graphics: 8086tiny.c
-	${CC} 8086tiny.c ${OPTS_NOGFX} ${OPTS_ALL} -o 8086tiny
-	strip 8086tiny
+	${CC} ${OPTS_ALL} 8086tiny.c
+	${AR} rcs lib8086tiny.a 8086tiny.o
 
 clean:
-	rm 8086tiny
+	rm lib8086tiny.a
