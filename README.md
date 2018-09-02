@@ -1,3 +1,5 @@
+[![Bare metal 8086tiny](https://img.youtube.com/vi/TMNoba17FXc/0.jpg)](https://www.youtube.com/watch?v=TMNoba17FXc "Bare metal 8086tiny")
+
 # Bare metal 8086 emulator for Raspberry Pi
 
 As part of a Hackathon, 8086tiny was ported hastily to the [Ultibo](https://ultibo.org/) bare metal environment for Raspberry Pi.
