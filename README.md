@@ -1,3 +1,38 @@
+# Bare metal 8086 emulator for Raspberry Pi
+
+As part of a Hackathon, 8086tiny was ported hastily to the [Ultibo](https://ultibo.org/) bare metal environment for Raspberry Pi.
+This allows for quick booting, at the expense of other luxuries.
+
+This is by no means a complete port, just a proof-of-concept.
+It has several failures:
+* Arrows keys don't work
+* Non-existent ANSI support
+* Incorrect palette handling
+* The code is _awful_
+
+## Running
+
+* Format an SD card to be FAT32
+* Copy the Raspberry Pi [firmware files](https://github.com/raspberrypi/firmware/tree/master/boot) onto it
+* Compile `lib8086tiny.a`
+* Compile the Ultibo `kernel7.img` and copy it to the root of the SD card
+* Put your `bios` file in the root of the SD card
+* Put your `fd.img` floppy disk image file in the root of the SD card
+* (Optionally) Put your `disk.img` hard disk image file in the root of the SD card
+
+## Compiling
+
+To build the library
+* Install the arm-none-eabi toolchain from [here](https://developer.arm.com/open-source/gnu-toolchain/gnu-rm/downloads)
+* Run `make` as usual
+* This should result in `lib8086tiny.a`
+
+To build the bare metal kernel
+* Compile the project from inside Ultibo Lazarus, or by using one of the batch files
+*Note*: you will need to edit the path to your Ultibo installation in the batch files.
+
+---
+
 8086tiny
 ========
 
